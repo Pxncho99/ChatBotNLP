@@ -10,8 +10,8 @@ This chatbot helps you make reservations... if you don’t mind a little chaos. 
 
 1. Clone the repository (because, let’s face it, you’ve probably tried everything else first).
    ```bash
-   git clone <repository-url>
-   cd <repository-folder>
+   git clone https://github.com/Pxncho99/ChatBotNLP.git
+   cd ChatBotNLP
 
 
 2. Create a virtual environment. It’s like a safe space for your code.
