@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <title>Chat: Datos de Reserva con Audio</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: auto;
+            padding: 1em;
+        }
+        #chat-box {
+            border: 1px solid #ccc;
+            padding: 1em;
+            height: 400px;
+            overflow-y: scroll;
+            margin-bottom: 1em;
+        }
+        .message {
+            margin-bottom: 1em;
+            padding: 0.5em;
+            border-radius: 5px;
+        }
+        .user-message {
+            background-color: #e8f0fe;
+        }
+        .response-message {
+            background-color: #e6ffe6;
+        }
+        button {
+            margin: 0.3em;
+        }
+        #gif-container {
+            margin-top: 1em;
+            text-align: center;
+        }
+        #gif-container img {
+            max-width: 100%;
+            height: auto;
+        }
+    </style>
+</head>
+<body>
+    <h1>Chat: Ingresa tus datos de reserva</h1>
+    <div id="chat-box"></div>
+    
+    <!-- Sección para mensaje de texto -->
+    <input type="text" id="message-input" placeholder="Escribe tu mensaje aquí..." style="width:70%;">
+    <button onclick="sendMessage()">Enviar Texto</button>
+    
+    <!-- Sección para grabar audio -->
+    <div>
+        <button id="recordButton" onclick="startRecording()">Grabar Audio</button>
+        <button id="stopButton" onclick="stopRecording()" disabled>Detener Grabación</button>
+        <audio id="audioPlayback" controls style="display:none;"></audio>
+    </div>
+    
+    <!-- Sección para reproducir el audio de respuesta -->
+    <div id="respuestaAudio" style="margin-top: 1em;"></div>
+
+    <!-- Sección para mostrar el GIF -->
+    <div id="gif-container"></div>
+
+    <script>
+        document.addEventListener("DOMContentLoaded", function () {
+            appendMessage("Bot", "¡Hola! Bienvenido al chat de reservas de AeroDragon ✈️🐉. ¿Cuál es tu nombre?", "response-message");
+            appendMessage("Bot", "Hi! Welcome to the reservations AeroDragon chatbot ✈️🐉. What is your name?", "response-message");
+        });
+
+        document.getElementById("message-input").addEventListener("keypress", function(event) {
+            if (event.key === "Enter") {
+                event.preventDefault();
+                sendMessage();
+            }
+        });
+
+        function sendMessage() {
+            const input = document.getElementById("message-input");
+            const message = input.value.trim();
+            if (!message) return;
+            
+            appendMessage("Tú", message, "user-message");
+            
+            const formData = new FormData();
+            formData.append("message", message);
+            fetch("/process_message", {
+                method: "POST",
+                body: formData
+            })
+            .then(response => response.json())
+            .then(data => {
+                appendMessage("Respuesta", data.response, "response-message");
+                if (data.audio) {
+                    mostrarAudio(data.audio);
+                }
+                if (data.gif) {
+                    mostrarGif(data.gif);  // Display the GIF
+                }
+                input.value = "";
+                input.focus();
+            })
+            .catch(error => console.error("Error:", error));
+        }
+        
+        function appendMessage(author, text, className) {
+            const chatBox = document.getElementById("chat-box");
+            const div = document.createElement("div");
+            div.className = "message " + className;
+            div.innerHTML = "<strong>" + author + ":</strong> " + text;
+            chatBox.appendChild(div);
+            chatBox.scrollTop = chatBox.scrollHeight;
+        }
+        
+        function mostrarAudio(audioUrl) {
+            const respuestaAudio = document.getElementById("respuestaAudio");
+            respuestaAudio.innerHTML = `<audio controls autoplay src="${audioUrl}"></audio>`;
+        }
+
+        function mostrarGif(gifUrl) {
+            const gifContainer = document.getElementById("gif-container");
+            gifContainer.innerHTML = `<img src="${gifUrl}" alt="GIF de respuesta">`;
+        }
+        
+        let mediaRecorder;
+        let recordedChunks = [];
+        
+        async function startRecording() {
+            recordedChunks = [];
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                mediaRecorder = new MediaRecorder(stream);
+                mediaRecorder.start();
+                document.getElementById("recordButton").disabled = true;
+                document.getElementById("stopButton").disabled = false;
+                
+                mediaRecorder.ondataavailable = event => {
+                    if (event.data.size > 0) {
+                        recordedChunks.push(event.data);
+                    }
+                };
+            } catch (err) {
+                console.error("Error al acceder al micrófono:", err);
+            }
+        }
+        
+        function stopRecording() {
+            if (mediaRecorder) {
+                mediaRecorder.stop();
+                document.getElementById("recordButton").disabled = false;
+                document.getElementById("stopButton").disabled = true;
+                
+                mediaRecorder.onstop = () => {
+                    const audioBlob = new Blob(recordedChunks, { type: 'audio/wav' });
+                    const audioUrl = URL.createObjectURL(audioBlob);
+                    const audioPlayback = document.getElementById("audioPlayback");
+                    audioPlayback.src = audioUrl;
+                    audioPlayback.style.display = "block";
+                    
+                    let formData = new FormData();
+                    formData.append("audio_data", audioBlob, "recording.wav");
+                    
+                    fetch("/process_audio_message", {
+                        method: "POST",
+                        body: formData
+                    })
+                    .then(response => response.json())
+                    .then(data => {
+                        appendMessage("Respuesta", data.response, "response-message");
+                        if (data.audio) {
+                            mostrarAudio(data.audio);
+                        }
+                        if (data.gif) {
+                            mostrarGif(data.gif);  // Display the GIF
+                        }
+                    })
+                    .catch(err => console.error("Error:", err));
+                };
+            }
+        }
+    </script>
+</body>
+</html>
