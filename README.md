@@ -12,7 +12,7 @@ This chatbot helps you make reservations... if you don’t mind a little chaos. 
    ```bash
    git clone https://github.com/Pxncho99/ChatBotNLP.git
    cd ChatBotNLP
-
+   ```
 
 2. Create a virtual environment. It’s like a safe space for your code.
    ```bash
