@@ -78,7 +78,7 @@ def translate_text(text):
 pattern_personas = re.compile(
     r"(?:(?P<number>\d+|one|two|three|four|five|six|seven|eight|nine|ten|a|an|uno|un|dos|tres|cuatro|cinco|seis|siete|ocho|nueve|diez)\s+)?"
     r"(?:(?:round[-\s]?trip|one[-\s]?way(?:\s+trip)?)\s+)?"
-    r"(?P<term>people|ticket(?:s)?|passengers|seats|pasajes|boletos|flight(?:s)?|vuelo(?:s)?|passages)",
+    r"(?P<term>people|ticket(?:s)?|passengers|seats|pasajes|boletos|passages)",
     re.IGNORECASE
 )
 
@@ -199,26 +199,88 @@ def procesar_mensaje(mensaje):
         "sentiment_analysis": ""
     }
     exclusion = {"i want", "buy", "reserve", "need", "quiero", "necesito"}
-    # Extracción de lugares
-    lugares = [
+    # Extracción inicial de lugares con spaCy (filtro de entidades)
+    lugares_spacy = [
         ent.text for ent in doc.ents
-        if ent.label_ in ("GPE", "LOC") and not es_aerolinea(ent.text) and ent.text.lower() not in exclusion
+        if ent.label_ in ("GPE", "LOC")
+        and not es_aerolinea(ent.text)
+        and ent.text.lower() not in exclusion
     ]
-    if len(lugares) < 2:
-        pattern_od = re.compile(r"de\s+([A-Za-záéíóúñÁÉÍÓÚÑ\s]+)\s+a\s+([A-Za-záéíóúñÁÉÍÓÚÑ\s]+)", re.IGNORECASE)
-        match_od = pattern_od.search(mensaje)
-        if match_od:
-            lugares = [match_od.group(1).strip(), match_od.group(2).strip()]
+
+    # Inicialmente se asignan los lugares obtenidos con spaCy
+    lugares = lugares_spacy.copy()
+
+    # Intentar detectar un patrón explícito que indique el orden (origen y destino)
+    orden_detectada = None
+
+    if idioma_original == "es":
+        # Lista de patrones en español: se incluyen variantes como "de", "desde", "hacia", "hasta" o "a"
+        patrones_es = [
+            r"de\s+([A-Za-záéíóúñÁÉÍÓÚÑ\s]+)\s+a\s+([A-Za-záéíóúñÁÉÍÓÚÑ\s]+)",       # de X a Y
+            r"desde\s+([A-Za-záéíóúñÁÉÍÓÚÑ\s]+)\s+h(?:a|á)cia\s+([A-Za-záéíóúñÁÉÍÓÚÑ\s]+)",  # desde X hacia Y
+            r"de\s+([A-Za-záéíóúñÁÉÍÓÚÑ\s]+)\s+h(?:a|á)cia\s+([A-Za-záéíóúñÁÉÍÓÚÑ\s]+)",     # de X hacia Y
+            r"desde\s+([A-Za-záéíóúñÁÉÍÓÚÑ\s]+)\s+(?:a|hasta)\s+([A-Za-záéíóúñÁÉÍÓÚÑ\s]+)"     # desde X a Y o desde X hasta Y
+        ]
+
+        for patron in patrones_es:
+            regex = re.compile(patron, re.IGNORECASE)
+            match = regex.search(mensaje)
+            if match:
+                orden_detectada = [match.group(1).strip(), match.group(2).strip()]
+                break
+
+    else:
+        # Lista de patrones en inglés con sinónimos para "from" y "to"
+        patrones_en = [
+            # Variante normal: "from X to Y"
+            r"(?:from|leaving|departing\s+from|starting\s+at)\s+([A-Za-z\s]+)\s+(?:to|towards|bound\s+for|heading\s+to|arriving\s+at)\s+([A-Za-z\s]+)",
+            # Variante inversa: "to Y from X"
+            r"(?:to|towards|bound\s+for|heading\s+to|arriving\s+at)\s+([A-Za-z\s]+)\s+(?:from|leaving|departing\s+from|starting\s+at)\s+([A-Za-z\s]+)"
+        ]
+
+        for patron in patrones_en:
+            regex = re.compile(patron, re.IGNORECASE)
+            match = regex.search(mensaje)
+            if match:
+                # En el primer patrón, se asume grupo1 = origen y grupo2 = destino.
+                # En el segundo patrón, se invierte el orden (origen es grupo2 y destino grupo1).
+                if patron.startswith("(?:from") or patron.startswith("from"):
+                    orden_detectada = [match.group(1).strip(), match.group(2).strip()]
+                else:
+                    orden_detectada = [match.group(2).strip(), match.group(1).strip()]
+                break
+
+    # Si se detecta un patrón explícito, sobrescribir la lista de lugares
+    if orden_detectada is not None:
+        lugares = orden_detectada
+
+    # Asignación final de origen y destino en el diccionario data
     if len(lugares) >= 2:
         data["origen"] = lugares[0]
         data["destino"] = lugares[1]
     elif len(lugares) == 1:
         data["origen"] = lugares[0]
 
-    if data["destino"]:
+    # Fallback para verificar nombres en español con acentos (por ejemplo, "Bogotá")
+    if len(lugares) < 2:
+        # Intentar extraer con regex desde el mensaje original (para preservar acentos)
+        pattern_od = re.compile(
+            r"de\s+([A-Za-záéíóúñÁÉÍÓÚÑ\s]+)\s+a\s+([A-Za-záéíóúñÁÉÍÓÚÑ\s]+)",
+            re.IGNORECASE
+        )
+        match_od = pattern_od.search(mensaje)
+        if match_od:
+            lugares = [match_od.group(1).strip(), match_od.group(2).strip()]
+            # Reasignar origen y destino si se detecta el patrón
+            data["origen"] = lugares[0]
+            data["destino"] = lugares[1]
+
+    # Limpieza adicional del destino (si es necesario)
+    if data.get("destino"):
         if " for " in data["destino"]:
             data["destino"] = data["destino"].split(" for ")[0].strip()
         data["destino"] = re.sub(r'\s+el$', '', data["destino"].strip(), flags=re.IGNORECASE)
+
 
     # Extracción de fechas
     fechas = [ent.text for ent in doc.ents if ent.label_ == "DATE"]
@@ -231,13 +293,36 @@ def procesar_mensaje(mensaje):
         for fecha in fechas_fallback:
             if fecha not in fechas:
                 fechas.append(fecha)
-    if idioma_original != "es" and len(fechas) < 1:
+    if idioma_original != "es" and len(fechas) < 2:
         pattern_date_en = re.compile(r"back on\s+([A-Za-z]+\s+\d{1,2}(?:st|nd|rd|th)?)", re.IGNORECASE)
         match_date_en = pattern_date_en.search(mensaje_traducido)
         if match_date_en:
             fechas.append(match_date_en.group(1).strip())
     if fechas:
         data["fecha_ida"] = fechas[0]
+        if len(fechas) > 1:
+            data["fecha_regreso"] = fechas[1]
+            data["round_trip"] = True
+        else:
+            # Convertir el mensaje a minúsculas para facilitar la comparación
+            msg = mensaje_traducido.lower()
+            # Si se menciona "one-way" (o variantes), se asume one-way.
+            if "one-way" in msg or "one way" in msg:
+                data["round_trip"] = False
+            # Si se menciona "round-trip", "round trip" o "return flight", se asume round-trip
+            elif "round-trip" in msg or "round trip" in msg or "return flight" in msg:
+                data["round_trip"] = True
+    else: 
+        # Convertir el mensaje a minúsculas para facilitar la comparación
+        msg = mensaje_traducido.lower()
+        print(msg)
+        # Si se menciona "one-way" (o variantes), se asume one-way.
+        if "one-way" in msg or "one way" in msg:
+            data["round_trip"] = False
+        # Si se menciona "round-trip", "round trip" o "return flight", se asume round-trip
+        elif "round-trip" in msg or "round trip" in msg or "return flight" in msg:
+            data["round_trip"] = True
+
     # Número de pasajeros
     match_personas = pattern_personas.search(mensaje_traducido)
     if match_personas:
@@ -261,8 +346,8 @@ def procesar_mensaje(mensaje):
 def check_missing_fields(reserva):
     """Verifica si faltan campos críticos; por ejemplo: destino y fecha de salida."""
     missing = []
-    if not reserva.get("language"):
-        missing.append("language")
+    if not reserva.get("client_name"):
+        missing.append("client_name")
     if not reserva.get("origen"):
         missing.append("origen")
     if not reserva.get("round_trip"):
@@ -279,6 +364,53 @@ def check_missing_fields(reserva):
         missing.append("bool_comentario")
     return missing
 
+def extraer_nombre(mensaje: str) -> str:
+    # Detectar el idioma del mensaje
+    idioma = detect(mensaje)
+
+    # Si el mensaje es en español
+    if idioma == "es":
+        try:
+            nlp = spacy.load("es_core_news_sm")
+        except Exception as e:
+            nlp = None
+
+        if nlp:
+            doc = nlp(mensaje)
+            # Buscar entidades de tipo persona ("PER" o "PERSON")
+            for ent in doc.ents:
+                if ent.label_ in ("PER", "PERSON"):
+                    return ent.text
+
+        # Fallback con regex para español (detecta "mi nombre es" o "soy")
+        pattern_es = re.compile(r"(?:mi nombre es|soy)\s+([A-ZÁÉÍÓÚÑ][a-záéíóúñ]+)", re.IGNORECASE)
+        match_es = pattern_es.search(mensaje)
+        if match_es:
+            return match_es.group(1)
+
+    # Si el mensaje es en inglés
+    else:
+        try:
+            nlp = spacy.load("en_core_web_sm")
+        except Exception as e:
+            nlp = None
+
+        if nlp:
+            doc = nlp(mensaje)
+            # En inglés, la etiqueta para personas es "PERSON"
+            for ent in doc.ents:
+                if ent.label_ == "PERSON":
+                    return ent.text
+
+        # Fallback con regex para inglés (detecta "my name is", "I'm" o "I am")
+        pattern_en = re.compile(r"(?:my name is|i(?:'m| am))\s+([A-Z][a-z]+)", re.IGNORECASE)
+        match_en = pattern_en.search(mensaje)
+        if match_en:
+            return match_en.group(1)
+
+    return None
+
+
 def finalizar_reserva(reserva, language):
     """Realiza los ajustes finales en la reserva, actualiza datos de aeropuertos y aerolíneas,
     genera el resumen, crea el audio y la inserción en MongoDB."""
@@ -292,6 +424,7 @@ def finalizar_reserva(reserva, language):
 
     if reserva.get("bool_comentario") and reserva.get("comentario"):
         comentario = reserva.get("comentario")
+        comentario = translate_text(comentario)
         blob = TextBlob(comentario)
         sentiment = blob.sentiment
         # Guarda la polaridad y la subjetividad
@@ -301,6 +434,7 @@ def finalizar_reserva(reserva, language):
         }
 
     inserted_id = insertar_reserva(reserva, collectionReservas)
+    print(reserva)
     print("ID del documento insertado:", inserted_id)
     resumen = generar_resumen_reserva(reserva, language)
     audio_output_path = os.path.join("static", "audio.mp3")
@@ -398,6 +532,17 @@ def insertar_reserva(reserva, collection):
     print(reserva)
     return resultado.inserted_id
 
+def minuscula_primera_palabra(texto: str) -> str:
+    # Dividimos el texto en dos partes: la primera palabra y el resto
+    partes = texto.split(" ", 1)
+    if partes:
+        primera = partes[0].lower()
+        if len(partes) > 1:
+            return primera + " " + partes[1]
+        else:
+            return primera
+    return texto
+
 # Manejo de la conversación en estado (para mensajes de texto)
 
 from flask import Flask, request, jsonify, session
@@ -449,10 +594,31 @@ def process_message():
                 return jsonify({"response": f"Hi, {client_name}. Tell us, how can we help you?"})
             else:
                 return jsonify({"response": f"Hola, {client_name}. Cuéntanos, ¿cómo podemos ayudarte?"})
-
+        if field == "client_name":
+            client_name = extraer_nombre(mensaje)
+            reserva["client_name"] = client_name
+            pending.pop(0)
+            session["reserva"] = reserva
+            session["pending_fields"] = pending
+            session.modified = True  # Ensure session changes persist
+            
+            if reserva["language"] == "en":
+                return jsonify({"response": f"Hi, {client_name}. Tell us, how can we help you?"})
+            else:
+                return jsonify({"response": f"Hola, {client_name}. Cuéntanos, ¿cómo podemos ayudarte?"})
         # Origin handling
         if field == "origen":
-            reserva.update(procesar_mensaje(mensaje.lower()))  # Update instead of overwrite
+            reserva.update(procesar_mensaje(minuscula_primera_palabra(mensaje)))  # Update instead of overwrite
+            for key, value in reserva.items():
+                if value != "" and key != "origen":
+                    try: 
+                        pending.remove(key)
+                    except:
+                        continue
+                    if key == "round_trip" and value == False:
+                        pending.remove("fecha_regreso")
+            
+
         elif field == "fecha_ida" or field == "fecha_regreso":
             reserva[field] = convert_date(mensaje)
         elif field == "round_trip":
@@ -502,7 +668,15 @@ def process_message():
     else:
         # First interaction: start reservation process
         reserva = ORIGINAL_DICT.copy()
-        reserva["client_name"] = mensaje  # Store user's name
+        #reserva["language"] = extraer_nombre(mensaje)  # Store user's name
+        if mensaje == "1":
+                reserva["language"] = 'en'
+        elif mensaje == "2":
+                reserva["language"] = 'es'
+        else:
+            prompt = generate_prompt_for_field('language', lang_mode)
+            return jsonify({"response": prompt})
+
         missing = check_missing_fields(reserva)
 
         session["reserva"] = reserva
@@ -510,7 +684,7 @@ def process_message():
         session.modified = True
 
         if missing:
-            prompt = generate_prompt_for_field(missing[0], lang_mode)
+            prompt = generate_prompt_for_field(missing[0], reserva["language"])
             return jsonify({"response": prompt})
         else:
             resumen, audio_url = finalizar_reserva(reserva, reserva.get("language", "en"))
@@ -534,7 +708,7 @@ def process_audio_message():
     print("Mensaje transcripto:", mensaje)
     lang_mode = obtener_idioma_preguntas(mensaje)
     
-    # Check if we are in the middle of a conversation (handling pending fields)
+     # Check if we are in the middle of a conversation (handling pending fields)
     if "pending_fields" in session and session["pending_fields"]:
         print(session.get("reserva", {}))
         field = session["pending_fields"][0]
@@ -565,10 +739,31 @@ def process_audio_message():
                 return jsonify({"response": f"Hi, {client_name}. Tell us, how can we help you?"})
             else:
                 return jsonify({"response": f"Hola, {client_name}. Cuéntanos, ¿cómo podemos ayudarte?"})
-
+        if field == "client_name":
+            client_name = extraer_nombre(mensaje)
+            reserva["client_name"] = client_name
+            pending.pop(0)
+            session["reserva"] = reserva
+            session["pending_fields"] = pending
+            session.modified = True  # Ensure session changes persist
+            
+            if reserva["language"] == "en":
+                return jsonify({"response": f"Hi, {client_name}. Tell us, how can we help you?"})
+            else:
+                return jsonify({"response": f"Hola, {client_name}. Cuéntanos, ¿cómo podemos ayudarte?"})
         # Origin handling
         if field == "origen":
-            reserva.update(procesar_mensaje(mensaje.lower()))  # Update instead of overwrite
+            reserva.update(procesar_mensaje(minuscula_primera_palabra(mensaje)))  # Update instead of overwrite
+            for key, value in reserva.items():
+                if value != "" and key != "origen":
+                    try: 
+                        pending.remove(key)
+                    except:
+                        continue
+                    if key == "round_trip" and value == False:
+                        pending.remove("fecha_regreso")
+            
+
         elif field == "fecha_ida" or field == "fecha_regreso":
             reserva[field] = convert_date(mensaje)
         elif field == "round_trip":
@@ -618,7 +813,15 @@ def process_audio_message():
     else:
         # First interaction: start reservation process
         reserva = ORIGINAL_DICT.copy()
-        reserva["client_name"] = mensaje  # Store user's name
+        #reserva["language"] = extraer_nombre(mensaje)  # Store user's name
+        if mensaje == "1":
+                reserva["language"] = 'en'
+        elif mensaje == "2":
+                reserva["language"] = 'es'
+        else:
+            prompt = generate_prompt_for_field('language', lang_mode)
+            return jsonify({"response": prompt})
+
         missing = check_missing_fields(reserva)
 
         session["reserva"] = reserva
@@ -626,7 +829,7 @@ def process_audio_message():
         session.modified = True
 
         if missing:
-            prompt = generate_prompt_for_field(missing[0], lang_mode)
+            prompt = generate_prompt_for_field(missing[0], reserva["language"])
             return jsonify({"response": prompt})
         else:
             resumen, audio_url = finalizar_reserva(reserva, reserva.get("language", "en"))
@@ -635,7 +838,8 @@ def process_audio_message():
             # Serve the GIF file
             gif_url = os.path.join("static", "plane.gif")   # URL to the GIF
             return jsonify({"response": resumen, "audio": audio_url, "gif": gif_url})
-
+        
+        
 def transcribe_audio(audio_path):
     """Transcribe el audio usando Whisper."""
     device = "cuda:0" if torch.cuda.is_available() else "cpu"
